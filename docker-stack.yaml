@@ -1,0 +1,252 @@
+version: "3.7"
+
+networks:
+  traefik:
+    external: true
+    
+volumes:
+  ohm_mongo:
+    external: true
+  ohm_psql_prod:
+    external: true
+
+services:
+
+  digitizer-front:
+    image: openhistorymap/digitizer-front
+    networks:
+      - traefik
+      - default
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+      replicas: 1
+      labels:
+        - "traefik.docker.network=traefik"
+        - "traefik.frontend.rule=Host:${FRONTEND_HOSTNAME}"
+        - "traefik.port=80"
+    environment:
+      ENDPOINT: "${PROTOCOL}://${API_HOSTNAME}/"
+
+
+      
+  digitizer-api:
+    image: openhistorymap/digitizer-api
+    networks:
+      - default
+      - traefik
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    deploy:
+      placement:
+        constraints:
+          - node.hostname == runner
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+      labels:
+        - "traefik.docker.network=traefik"
+        - "traefik.frontend.rule=Host:${API_HOSTNAME}"
+        - "traefik.port=80"
+    environment:
+      DEBUG: "FALSE"
+      SECRET: "${SHARED_SECRET}"
+
+  iiif:
+    image: lorisimageserver/loris
+    networks:
+      - traefik
+      - default
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+      replicas: 6
+      placement:
+        constraints:
+          - node.hostname == runner
+      labels:
+        - "traefik.docker.network=traefik"
+        - "traefik.frontend.rule=Host:${IIIF_ENDPOINT}"
+        - "traefik.port=5004"
+    depends_on:
+      - mongo
+    volumes:
+      - /srv/ohm:/opt/loris/tests/img
+      
+  pyramids:
+    image: cusspvz/nginx
+    networks:
+      - traefik
+      - default
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+      replicas: 3
+      placement:
+        constraints:
+          - node.hostname == runner
+      labels:
+        - "traefik.docker.network=traefik"
+        - "traefik.frontend.rule=Host:${PYRAMIDS_ENDPOINT}"
+        - "traefik.port=80"
+    volumes:
+      - /srv/ohm/pyramids:/pub
+  mongodb_container:
+    image: mongo:latest
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == runner
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+    ports:
+      - 27017:27017
+    volumes:
+      - ohm_mongo:/data/db
+      
+  minio:
+    image: minio/minio:latest
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == runner
+      labels:
+        - "traefik.docker.network=traefik"
+        - "traefik.frontend.rule=Host:${UPLOAD_ENDPOINT}"
+        - "traefik.port=9000"
+    environment:
+      MINIO_ACCESS_KEY: ${STORAGE_ACCES_KEY}
+      MINIO_SECRET_KEY: ${STORAGE_SECRET_KEY}
+    command:
+      server /data
+    ports:
+      - 9010:9000
+    volumes:
+      - /srv/ohm/uploads:/data
+      
+      
+  files:
+    image: cusspvz/nginx
+    networks:
+      - traefik
+      - default
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+      replicas: 3
+      placement:
+        constraints:
+          - node.hostname == runner
+      labels:
+        - "traefik.docker.network=traefik"
+        - "traefik.frontend.rule=Host:files.digitize.openhistorymap.org"
+        - "traefik.port=80"
+    volumes:
+      - /srv/ohm/uploads:/pub
+      
+  prod_db:
+    image: mdillon/postgis:11-alpine
+    networks:
+      - traefik
+      - default
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == runner
+    ports:
+      - 25432:5432
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASS: ${POSTGRES_PASS}
+      POSTGRES_DBNAME: ${POSTGRES_DBNAME}
+      ALLOW_IP_RANGE: 0.0.0.0/0
+    volumes:
+      - ohm_psql_prod:/var/lib/postgresql/data
+      
+  map:
+    image: openhistorymap/map
+    networks:
+      - traefik
+      - default
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+      replicas: 3
+      placement:
+        constraints:
+          - node.hostname == runner
+      labels:
+        - "traefik.docker.network=traefik"
+        - "traefik.frontend.rule=Host:${MAP_ENDPOINT}"
+        - "traefik.port=80"
+    environment:
+      TILESERVER: ${PROTOCOL}://{$TILES_ENDPOINT}/
+      
+  maputnik:
+    image: maputnik/editor
+    networks:
+      - traefik
+      - default
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == runner
+      labels:
+        - "traefik.docker.network=traefik"
+        - "traefik.frontend.rule=Host:${STYLING_ENDPOINT}"
+        - "traefik.port=8888"
+      
+      
+  tiles-api:
+    image: openhistorymap/tiles-api
+    networks:
+      - default
+      - traefik
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+      labels:
+        - "traefik.docker.network=traefik"
+        - "traefik.frontend.rule=Host:${TILES_ENDPOINT}"
+        - "traefik.port=80"
+    environment:
+      POSTGRES: prod_db
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASS: ${POSTGRES_PASS}
+      POSTGRES_DBNAME: ${POSTGRES_DBNAME}
